@@ -1,0 +1,89 @@
+name: Build & Release Water Party Server
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths:
+      - 'server/**' # Only runs if server files are modified
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------
+  # 1. GO SERVER TESTS
+  # ---------------------------------------------------
+  test-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: server/go.sum
+      - name: Run Go Server Tests
+        run: |
+          cd server && go test -v -cover ./...
+      - name: Build Go Server (Dry Run)
+        run: |
+          cd server && go build -o partyserver .
+
+  # ---------------------------------------------------
+  # 2. SERVER BUILD (Multi-Platform)
+  # ---------------------------------------------------
+  build-server:
+    needs: [test-server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: server/go.sum
+
+      - name: Build All Server Binaries via Makefile
+        run: make release-server
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaterParty-Server-All
+          path: release/server/partyserver-*
+
+  # ---------------------------------------------------
+  # 3. AUTOMATIC SERVER RELEASE
+  # ---------------------------------------------------
+  create-server-release:
+    needs: [build-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: WaterParty-Server-All
+          path: all_artifacts
+
+      - name: Move artifacts to root
+        run: |
+          find all_artifacts/ -name "partyserver-*" -exec mv {} . \;
+
+      - name: Update Static Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: server-v1.0.${{ github.run_number }}
+          name: Water Party Server Build #${{ github.run_number }}
+          body: |
+            ## ⚡ Water Party Server Release
+            
+            This is an automated production build of the Water Party backend.
+            
+            ### Included Binaries
+            - **Multi-Platform**: Cross-compiled binaries for Linux, Windows, and macOS.
+            
+            *Triggered by commit: ${{ github.sha }}*
+          files: |
+            partyserver-*
+          draft: false
+          prerelease: false
+          make_latest: false # Set to true if you want server to show as the "Latest" repo release

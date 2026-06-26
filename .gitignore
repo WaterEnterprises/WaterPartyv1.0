@@ -1,0 +1,33 @@
+# Binaries
+server/partyserver
+release/
+build/
+*.exe
+*.apk
+*.zip
+*.tar.gz
+server/server
+
+# Flutter/Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Go
+bin/
+pkg/
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+GEMINI.md
+
+.gemini/
+gha-creds-*.json
+server/server_bin
+.kilocodemodes
+.kilocode/mcp.json
+server/server_test

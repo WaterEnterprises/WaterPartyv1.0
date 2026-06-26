@@ -1,0 +1,196 @@
+name: Build & Release Water Party App
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    paths-ignore:
+      - 'server/**' # Skips running App CI if only server files changed
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------
+  # 1. ANDROID BUILD
+  # ---------------------------------------------------
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+      
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+      
+      - name: Install Dependencies
+        run: |
+          flutter clean
+          flutter pub get
+
+      - name: Build Universal APK
+        run: |
+          flutter build apk --release 
+          # Copy universal APK with proper naming (Flutter names it app-release.apk)
+          cp build/app/outputs/flutter-apk/*-release.apk ./WaterParty-Universal-release.apk
+          
+      - name: Build ABI-Specific APKs
+        run: |
+          # Clean and rebuild with split-per-abi
+          flutter clean
+          flutter pub get
+          flutter build apk --release --split-per-abi 
+          mv build/app/outputs/flutter-apk/*.apk .
+      
+      - name: Build Android App Bundle
+        run: |
+          flutter build appbundle --release 
+          cp build/app/outputs/bundle/release/*.aab .
+            
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaterParty-Android
+          path: |
+            *.apk
+            *.aab
+
+  # ---------------------------------------------------
+  # 2. LINUX BUILD
+  # ---------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libespeak-ng-dev espeak-ng
+      
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+          
+      - name: Build Linux via Makefile
+        run: make build-linux
+
+      - name: Compress Build
+        run: tar -czvf WaterParty-Linux.tar.gz -C build/linux/x64/release/bundle .
+        
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaterParty-Linux
+          path: WaterParty-Linux.tar.gz
+
+  # ---------------------------------------------------
+  # 3. WEB BUILD
+  # ---------------------------------------------------
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'master'
+          cache: true
+          
+      - name: Build Web via Makefile
+        run: make build-web
+      
+      - name: Compress Build
+        run: zip -r WaterParty-Web.zip build/web
+        
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaterParty-Web
+          path: WaterParty-Web.zip
+
+  # ---------------------------------------------------
+  # 4. AUTOMATIC APP RELEASE (On every push to master/main)
+  # ---------------------------------------------------
+  create-app-release:
+    needs: [build-android, build-linux, build-web]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract or Generate Version
+        id: get_version
+        run: |
+          # First, get version from pubspec.yaml
+          PUBSPEC_VERSION=$(grep -m1 '^version:' pubspec.yaml | sed 's/version: //' | tr -d ' ')
+          
+          # Check if this is a tag push
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # Use tag version if it's a tag push (e.g., v1.0.0 -> 1.0.0)
+            VERSION=${GITHUB_REF#refs/tags/v}
+            TAG_NAME=${{ github.ref_name }}
+            IS_TAG=true
+          else
+            # Use pubspec version for branch pushes
+            VERSION="${PUBSPEC_VERSION}"
+            # Create a tag for the release
+            TAG_NAME="v${VERSION}"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG_NAME"
+            git push origin "$TAG_NAME"
+            IS_TAG=false
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "IS_TAG=$IS_TAG" >> $GITHUB_ENV
+
+      - name: Download all Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_artifacts
+
+      - name: Move artifacts to root
+        run: |
+          find all_artifacts/ -name "*.apk" -exec mv {} . \;
+          find all_artifacts/ -name "*.aab" -exec mv {} . \;
+          find all_artifacts/ -name "WaterParty-Linux.tar.gz" -exec mv {} . \;
+          find all_artifacts/ -name "WaterParty-Web.zip" -exec mv {} . \;
+
+      - name: List artifacts for debug
+        run: |
+          echo "=== Artifacts in root directory ==="
+          ls -la *.apk *.aab *.tar.gz *.zip 2>/dev/null || echo "No artifacts found"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.IS_TAG == 'true' && format('Water Party App v{0}', env.VERSION) || format('Water Party App Build {0} (Auto)', env.VERSION) }}
+          body: |
+            ${{ env.IS_TAG == 'true' && '## 🚀 Water Party App v' || '## 🚀 Water Party App Build ' }}${{ env.VERSION }}
+            
+            ${{ env.IS_TAG == 'true' && 'This is an official tagged release of the Water Party Client Ecosystem.' || 'This is an automated build from branch: ' }}${{ github.ref_name }}
+            
+            ### 📱 Mobile
+            - **Android (Universal)**: All-in-one APK that works on any Android device.
+            - **Android (ARM64)**: Optimized for 64-bit ARM devices.
+            - **Android (ARM32)**: Optimized for 32-bit ARM devices.
+            - **Android (x86_64)**: For x86_64 emulators/devices.
+            - **Android (AAB)**: Android App Bundle for Play Store submission.
+            
+            ### 💻 Desktop & Web
+            - **Linux**: Compressed Linux binary bundle.
+            - **Web**: Optimized JavaScript web build.
+            
+            ${{ env.IS_TAG == 'true' && format('*Release version: {0}*', env.VERSION) || format('*Build: {0} | Commit: {1}*', env.VERSION, github.sha) }}
+          files: |
+            *.apk
+            *.aab
+            WaterParty-Linux.tar.gz
+            WaterParty-Web.zip
+          draft: false
+          prerelease: false
+          make_latest: true
